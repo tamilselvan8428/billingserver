@@ -4,14 +4,13 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
-const mongoSanitize = require('express-mongo-sanitize');
 const app = express();
 
-// Basic Middleware first
+// Basic Middleware
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Security Middleware - reordered
+// Security Middleware
 app.use(helmet());
 app.use(cors({
   origin: 'http://localhost:5173',
@@ -21,35 +20,41 @@ app.use(cors({
 
 // Rate Limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100
 });
 app.use(limiter);
 
-// Mongo Sanitize - moved after express.json()
-app.use(
-  mongoSanitize({
-    replaceWith: '_',
-    onSanitize: ({ req, key }) => {
-      console.warn(`Sanitized ${key} on request ${req.method} ${req.url}`);
-    },
-  })
-);
+// Custom Sanitizer Middleware
+app.use((req, _, next) => {
+  const sanitize = (obj) => {
+    if (obj && typeof obj === 'object') {
+      Object.keys(obj).forEach(key => {
+        if (typeof obj[key] === 'string') {
+          obj[key] = obj[key].replace(/\$/g, '_').replace(/\./g, '_');
+        } else if (typeof obj[key] === 'object') {
+          sanitize(obj[key]);
+        }
+      });
+    }
+  };
+
+  ['body', 'params', 'query'].forEach(prop => {
+    if (req[prop]) sanitize(req[prop]);
+  });
+  next();
+});
 
 // MongoDB Connection
 const dbPassword = process.env.DB_PASSWORD;
 const dbUri = `mongodb+srv://rajasnacks6:${dbPassword}@billing.qqyrxtl.mongodb.net/billing_system?retryWrites=true&w=majority`;
 
-mongoose.connect(dbUri, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 5000
-})
-.then(() => console.log('Connected to MongoDB'))
-.catch(err => {
-  console.error('MongoDB connection error:', err);
-  process.exit(1);
-});
+mongoose.connect(dbUri)
+  .then(() => console.log('Connected to MongoDB'))
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  });
 
 // Database Models
 const Counter = mongoose.model('Counter', new mongoose.Schema({
@@ -314,7 +319,7 @@ app.use((req, res) => {
 
 // Server Startup
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
 

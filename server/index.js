@@ -2,15 +2,28 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const mongoSanitize = require('express-mongo-sanitize');
 const app = express();
 
-// Middleware
+// Security Middleware
+app.use(helmet());
+app.use(mongoSanitize());
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+
+// Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // limit each IP to 100 requests per windowMs
+});
+app.use(limiter);
+
+app.use(express.json({ limit: '10kb' }));
 
 // MongoDB Connection
 const dbPassword = process.env.DB_PASSWORD;
@@ -18,31 +31,33 @@ const dbUri = `mongodb+srv://rajasnacks6:${dbPassword}@billing.qqyrxtl.mongodb.n
 
 mongoose.connect(dbUri, {
   useNewUrlParser: true,
-  useUnifiedTopology: true
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000
 })
 .then(() => console.log('Connected to MongoDB'))
-.catch(err => console.error('MongoDB connection error:', err));
+.catch(err => {
+  console.error('MongoDB connection error:', err);
+  process.exit(1);
+});
 
-// Counter Schema for auto-increment
-const counterSchema = new mongoose.Schema({
+// Database Models
+const Counter = mongoose.model('Counter', new mongoose.Schema({
   _id: { type: String, required: true },
   seq: { type: Number, default: 0 }
-});
-const Counter = mongoose.model('Counter', counterSchema);
+}));
 
-// Product Schema
 const productSchema = new mongoose.Schema({
   _id: { type: Number },
-  name: { type: String, required: true },
-  nameTamil: { type: String, required: true },
-  price: { type: Number, required: true },
-  stock: { type: Number, default: 0 },
+  name: { type: String, required: true, trim: true },
+  nameTamil: { type: String, required: true, trim: true },
+  price: { type: Number, required: true, min: 0 },
+  stock: { type: Number, default: 0, min: 0 },
+  minStockLevel: { type: Number, default: 5 },
   createdAt: { type: Date, default: Date.now }
 });
 
-// Auto-increment middleware
 productSchema.pre('save', async function(next) {
-  if (this._id) return next(); // Skip if ID already exists
+  if (this._id) return next();
   
   try {
     const counter = await Counter.findByIdAndUpdate(
@@ -59,63 +74,84 @@ productSchema.pre('save', async function(next) {
 
 const Product = mongoose.model('Product', productSchema);
 
-// Bill Schema
 const billSchema = new mongoose.Schema({
   items: [{
-    productId: { type: Number, ref: 'Product' },
-    nameTamil: String,
-    quantity: Number,
-    price: Number,
-    total: Number
+    productId: { type: Number, ref: 'Product', required: true },
+    nameTamil: { type: String, required: true },
+    quantity: { type: Number, required: true, min: 1 },
+    price: { type: Number, required: true, min: 0 },
+    total: { type: Number, required: true, min: 0 }
   }],
-  grandTotal: Number,
+  grandTotal: { type: Number, required: true, min: 0 },
+  customerName: { type: String, trim: true },
+  mobileNumber: { type: String, trim: true },
   date: { type: Date, default: Date.now }
 });
 
 const Bill = mongoose.model('Bill', billSchema);
 
-// Routes
+// Helper Functions
+const validateProductData = (data) => {
+  const errors = [];
+  if (!data.name) errors.push('Product name is required');
+  if (!data.nameTamil) errors.push('Tamil product name is required');
+  if (!data.price || isNaN(data.price)) errors.push('Valid price is required');
+  return errors;
+};
 
-// Product Routes
+// API Routes
+
+// Product Management
 app.get('/api/products', async (req, res) => {
   try {
     const products = await Product.find().sort({ _id: 1 });
     res.json(products);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: 'Failed to fetch products', error: err.message });
   }
 });
 
 app.post('/api/products', async (req, res) => {
   try {
-    const { name, nameTamil, price } = req.body;
-    
-    if (!name || !nameTamil || !price) {
-      return res.status(400).json({ message: 'All fields are required' });
+    const errors = validateProductData(req.body);
+    if (errors.length > 0) {
+      return res.status(400).json({ message: 'Validation failed', errors });
     }
 
     const product = new Product({
-      name,
-      nameTamil,
-      price: parseFloat(price)
+      name: req.body.name,
+      nameTamil: req.body.nameTamil,
+      price: parseFloat(req.body.price),
+      stock: parseInt(req.body.stock) || 0
     });
     
     await product.save();
     res.status(201).json(product);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({ message: 'Failed to create product', error: err.message });
   }
 });
 
 app.put('/api/products/:id', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
-    const { name, nameTamil, price } = req.body;
+    if (isNaN(productId)) {
+      return res.status(400).json({ message: 'Invalid product ID' });
+    }
+
+    const errors = validateProductData(req.body);
+    if (errors.length > 0) {
+      return res.status(400).json({ message: 'Validation failed', errors });
+    }
 
     const product = await Product.findOneAndUpdate(
       { _id: productId },
-      { name, nameTamil, price },
-      { new: true }
+      {
+        name: req.body.name,
+        nameTamil: req.body.nameTamil,
+        price: parseFloat(req.body.price)
+      },
+      { new: true, runValidators: true }
     );
 
     if (!product) {
@@ -123,93 +159,91 @@ app.put('/api/products/:id', async (req, res) => {
     }
     res.json(product);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({ message: 'Failed to update product', error: err.message });
   }
 });
 
-app.delete('/api/products/:id', async (req, res) => {
-  try {
-    const productId = parseInt(req.params.id);
-    const product = await Product.findOneAndDelete({ _id: productId });
-
-    if (!product) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    res.json({ message: 'Product deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
+// Stock Management
 app.post('/api/products/stock', async (req, res) => {
   try {
     const { productId, quantity } = req.body;
     
-    if (!productId || !quantity) {
-      return res.status(400).json({ message: 'Both productId and quantity are required' });
+    if (!productId || !quantity || isNaN(quantity)) {
+      return res.status(400).json({ message: 'Valid product ID and quantity are required' });
     }
 
     const id = parseInt(productId);
     const qty = parseInt(quantity);
 
-    if (isNaN(id) || isNaN(qty) || qty <= 0) {
-      return res.status(400).json({ message: 'Invalid product ID or quantity' });
-    }
+    const product = await Product.findOneAndUpdate(
+      { _id: id },
+      { $inc: { stock: qty } },
+      { new: true }
+    );
 
-    const product = await Product.findOne({ _id: id });
     if (!product) {
-      const existingIds = await Product.distinct('_id');
-      return res.status(404).json({ 
-        message: `Product ${id} not found. Available IDs: ${existingIds.join(', ')}`
-      });
+      return res.status(404).json({ message: 'Product not found' });
     }
 
-    product.stock += qty;
-    await product.save();
-    res.json(product);
+    res.json({
+      ...product.toObject(),
+      message: `Stock updated. New stock level: ${product.stock}`
+    });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    res.status(400).json({ message: 'Failed to update stock', error: err.message });
   }
 });
 
 app.get('/api/products/low-stock', async (req, res) => {
   try {
-    const lowStockProducts = await Product.find({ stock: { $lt: 10 } });
+    const lowStockProducts = await Product.find({
+      $expr: { $lt: ['$stock', '$minStockLevel'] }
+    });
     res.json(lowStockProducts);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: 'Failed to fetch low stock products', error: err.message });
   }
 });
 
-// Billing Routes
+// Billing System
 app.post('/api/bills', async (req, res) => {
-  const { items } = req.body;
+  const session = await mongoose.startSession();
+  session.startTransaction();
   
   try {
+    const { items, customerName, mobileNumber } = req.body;
+    
     if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ message: 'Invalid bill items' });
+      await session.abortTransaction();
+      return res.status(400).json({ message: 'At least one bill item is required' });
     }
 
     let grandTotal = 0;
     const billItems = [];
+    const stockUpdates = [];
     
+    // Validate all items first
     for (const item of items) {
       const productId = parseInt(item.productId);
-      const product = await Product.findOne({ _id: productId });
+      const quantity = parseInt(item.quantity);
       
+      if (isNaN(productId) || isNaN(quantity) || quantity <= 0) {
+        await session.abortTransaction();
+        return res.status(400).json({ message: 'Invalid product ID or quantity' });
+      }
+
+      const product = await Product.findOne({ _id: productId }).session(session);
       if (!product) {
+        await session.abortTransaction();
         return res.status(404).json({ message: `Product ${productId} not found` });
       }
       
-      const quantity = parseInt(item.quantity);
       if (product.stock < quantity) {
+        await session.abortTransaction();
         return res.status(400).json({ 
-          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`
+          message: `Insufficient stock for ${product.nameTamil}. Available: ${product.stock}`
         });
       }
-      
-      product.stock -= quantity;
-      await product.save();
       
       const itemTotal = quantity * product.price;
       grandTotal += itemTotal;
@@ -221,52 +255,57 @@ app.post('/api/bills', async (req, res) => {
         price: product.price,
         total: itemTotal
       });
+      
+      stockUpdates.push({
+        updateOne: {
+          filter: { _id: product._id },
+          update: { $inc: { stock: -quantity } }
+        }
+      });
+    }
+    
+    // Process all updates in a single operation
+    if (stockUpdates.length > 0) {
+      await Product.bulkWrite(stockUpdates, { session });
     }
     
     const bill = new Bill({
       items: billItems,
-      grandTotal
+      grandTotal,
+      customerName,
+      mobileNumber
     });
     
-    await bill.save();
+    await bill.save({ session });
+    await session.commitTransaction();
+    
     res.status(201).json(bill);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    await session.abortTransaction();
+    res.status(400).json({ message: 'Failed to create bill', error: err.message });
+  } finally {
+    session.endSession();
   }
 });
 
-app.get('/api/bills/:id', async (req, res) => {
-  try {
-    const bill = await Bill.findById(req.params.id);
-    if (!bill) {
-      return res.status(404).json({ message: 'Bill not found' });
-    }
-    
-    const populatedBill = {
-      ...bill.toObject(),
-      items: await Promise.all(bill.items.map(async item => {
-        const product = await Product.findOne({ _id: item.productId });
-        return {
-          ...item,
-          productDetails: product || null
-        };
-      }))
-    };
-    
-    res.json(populatedBill);
-  } catch (err) {
-    res.status(500).json({ message: err.message });
-  }
-});
-
-// Error handling middleware
+// Error Handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ message: 'Something went wrong!' });
+  res.status(500).json({ message: 'Internal server error' });
 });
 
-// Start server
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ message: 'Endpoint not found' });
+});
+
+// Server Startup
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+});
+
+process.on('SIGINT', async () => {
+  await mongoose.connection.close();
+  process.exit(0);
 });

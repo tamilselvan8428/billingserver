@@ -12,15 +12,32 @@ app.use(express.urlencoded({ extended: true }));
 
 // Security Middleware
 app.use(helmet());
+// Replace your current CORS middleware with this:
 app.use(cors({
-  origin: [
-    'http://localhost:5173',        // Local development
-    'https://rajasnacks.netlify.app' // Production - NO trailing slash
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Added OPTIONS
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true // If using cookies/auth tokens
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'https://rajasnacks.netlify.app',
+      'http://localhost:5173'
+    ];
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = `CORS policy blocked request from ${origin}`;
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
+
+// Add this before your routes to handle preflight requests
+app.options('*', cors());
 
 // Rate Limiting
 const limiter = rateLimit({

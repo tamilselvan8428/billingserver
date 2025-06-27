@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: billing-server
+    runtime: node
+    env: node
+    rootDirectory: /server  # Points to your server folder
+    buildCommand: npm install
+    startCommand: node index.js

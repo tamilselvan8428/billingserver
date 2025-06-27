@@ -11,7 +11,7 @@ const app = express();
 app.use(helmet());
 app.use(mongoSanitize());
 app.use(cors({
-  origin:  'http://localhost:5173',
+  origin: 'http://localhost:5173',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -107,91 +107,28 @@ app.get('/api/products', async (req, res) => {
     const products = await Product.find().sort({ _id: 1 });
     res.json(products);
   } catch (err) {
+    console.error('Error fetching products:', err);
     res.status(500).json({ message: 'Failed to fetch products', error: err.message });
   }
 });
 
-app.post('/api/bills', async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
+app.post('/api/products', async (req, res) => {
   try {
-    const { items, customerName, mobileNumber } = req.body;
-    
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'At least one bill item is required' });
+    const errors = validateProductData(req.body);
+    if (errors.length > 0) {
+      return res.status(400).json({ message: 'Validation failed', errors });
     }
 
-    let grandTotal = 0;
-    const billItems = [];
-    const stockUpdates = [];
-    
-    // Validate all items first
-    for (const item of items) {
-      const productId = parseInt(item.productId);
-      const quantity = parseInt(item.quantity);
-      
-      if (isNaN(productId) || isNaN(quantity) || quantity <= 0) {
-        await session.abortTransaction();
-        return res.status(400).json({ message: 'Invalid product ID or quantity' });
-      }
-
-      const product = await Product.findOne({ _id: productId }).session(session);
-      if (!product) {
-        await session.abortTransaction();
-        return res.status(404).json({ message: `Product ${productId} not found` });
-      }
-      
-      if (product.stock < quantity) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          message: `Insufficient stock for ${product.nameTamil}. Available: ${product.stock}`,
-          productId: product._id,
-          availableStock: product.stock
-        });
-      }
-      
-      const itemTotal = quantity * product.price;
-      grandTotal += itemTotal;
-      
-      billItems.push({
-        productId: product._id,
-        nameTamil: product.nameTamil,
-        quantity,
-        price: product.price,
-        total: itemTotal
-      });
-      
-      stockUpdates.push({
-        updateOne: {
-          filter: { _id: product._id },
-          update: { $inc: { stock: -quantity } }
-        }
-      });
-    }
-    
-    // Process all updates in a single operation
-    if (stockUpdates.length > 0) {
-      await Product.bulkWrite(stockUpdates, { session });
-    }
-    
-    const bill = new Bill({
-      items: billItems,
-      grandTotal,
-      customerName,
-      mobileNumber
+    const product = new Product({
+      name: req.body.name,
+      nameTamil: req.body.nameTamil,
+      price: req.body.price
     });
-    
-    await bill.save({ session });
-    await session.commitTransaction();
-    
-    res.status(201).json(bill);
+
+    await product.save();
+    res.status(201).json(product);
   } catch (err) {
-    await session.abortTransaction();
-    res.status(400).json({ message: 'Failed to create bill', error: err.message });
-  } finally {
-    session.endSession();
+    res.status(400).json({ message: 'Failed to create product', error: err.message });
   }
 });
 
@@ -304,7 +241,9 @@ app.post('/api/bills', async (req, res) => {
       if (product.stock < quantity) {
         await session.abortTransaction();
         return res.status(400).json({ 
-          message: `Insufficient stock for ${product.nameTamil}. Available: ${product.stock}`
+          message: `Insufficient stock for ${product.nameTamil}. Available: ${product.stock}`,
+          productId: product._id,
+          availableStock: product.stock
         });
       }
       

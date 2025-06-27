@@ -7,9 +7,12 @@ const helmet = require('helmet');
 const mongoSanitize = require('express-mongo-sanitize');
 const app = express();
 
-// Security Middleware
+// Basic Middleware first
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Security Middleware - reordered
 app.use(helmet());
-app.use(mongoSanitize());
 app.use(cors({
   origin: 'http://localhost:5173',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -23,7 +26,15 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-app.use(express.json({ limit: '10kb' }));
+// Mongo Sanitize - moved after express.json()
+app.use(
+  mongoSanitize({
+    replaceWith: '_',
+    onSanitize: ({ req, key }) => {
+      console.warn(`Sanitized ${key} on request ${req.method} ${req.url}`);
+    },
+  })
+);
 
 // MongoDB Connection
 const dbPassword = process.env.DB_PASSWORD;

@@ -155,10 +155,10 @@ app.post('/api/products', async (req, res) => {
 app.post('/api/products/stock/bulk', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
-  
+
   try {
     const { updates } = req.body;
-    
+
     if (!updates || !Array.isArray(updates)) {
       await session.abortTransaction();
       return res.status(400).json({ message: 'Updates array is required' });
@@ -167,24 +167,16 @@ app.post('/api/products/stock/bulk', async (req, res) => {
     const bulkOperations = [];
     const results = [];
     
+    // Prepare operations and validate inputs
     for (const update of updates) {
       const productId = parseInt(update.productId);
       const quantity = parseInt(update.quantity);
-      
-      if (isNaN(productId)){
-        results.push({
-          productId,
-          status: 'failed',
-          message: 'Invalid product ID'
-        });
-        continue;
-      }
 
-      if (isNaN(quantity)) {
+      if (isNaN(productId) || isNaN(quantity)) {
         results.push({
           productId,
           status: 'failed',
-          message: 'Invalid quantity'
+          message: 'Invalid product ID or quantity'
         });
         continue;
       }
@@ -195,30 +187,58 @@ app.post('/api/products/stock/bulk', async (req, res) => {
           update: { $inc: { stock: quantity } }
         }
       });
-
-      results.push({
-        productId,
-        status: 'pending'
-      });
     }
 
+    // Execute bulk operation if we have valid operations
+    let bulkResult = null;
     if (bulkOperations.length > 0) {
-      const bulkResult = await Product.bulkWrite(bulkOperations, { session });
-      
-      // Update results with actual operation status
-      bulkResult.result?.nModified?.forEach((modified, index) => {
-        if (results[index]) {
-          results[index].status = modified ? 'success' : 'failed';
-          results[index].message = modified ? 'Stock updated' : 'No changes made';
-        }
-      });
+      bulkResult = await Product.bulkWrite(bulkOperations, { session });
     }
+
+    // Get updated products to include current stock in response
+    const updatedProductIds = updates
+      .map(u => parseInt(u.productId))
+      .filter(id => !isNaN(id));
+    
+    const updatedProducts = await Product.find(
+      { _id: { $in: updatedProductIds } },
+      { _id: 1, stock: 1, nameTamil: 1 }
+    ).session(session);
+
+    // Prepare response
+    const response = {
+      message: 'Bulk update processed',
+      results: updates.map(update => {
+        const productId = parseInt(update.productId);
+        const product = updatedProducts.find(p => p._id === productId);
+        
+        if (!product) {
+          return {
+            productId,
+            status: 'failed',
+            message: 'Product not found'
+          };
+        }
+
+        return {
+          productId,
+          productName: product.nameTamil,
+          newStock: product.stock,
+          status: 'success',
+          message: 'Stock updated successfully'
+        };
+      })
+    };
 
     await session.commitTransaction();
-    res.json({ message: 'Bulk update processed', results });
+    res.json(response);
   } catch (err) {
     await session.abortTransaction();
-    res.status(400).json({ message: 'Failed to process bulk update', error: err.message });
+    console.error('Bulk update error:', err);
+    res.status(400).json({ 
+      message: 'Failed to process bulk update',
+      error: err.message 
+    });
   } finally {
     session.endSession();
   }

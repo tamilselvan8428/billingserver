@@ -56,7 +56,7 @@ const dbUri = `mongodb+srv://rajasnacks6:${dbPassword}@billing.qqyrxtl.mongodb.n
 mongoose.connect(dbUri)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => {
-    console.error('MongoDB connection error:', err);
+    console.error('MongoDB connection error:', err) ;
     process.exit(1);
   });
 
@@ -151,7 +151,78 @@ app.post('/api/products', async (req, res) => {
     res.status(400).json({ message: 'Failed to create product', error: err.message });
   }
 });
+// Add this after your existing stock management routes
+app.post('/api/products/stock/bulk', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { updates } = req.body;
+    
+    if (!updates || !Array.isArray(updates)) {
+      await session.abortTransaction();
+      return res.status(400).json({ message: 'Updates array is required' });
+    }
 
+    const bulkOperations = [];
+    const results = [];
+    
+    for (const update of updates) {
+      const productId = parseInt(update.productId);
+      const quantity = parseInt(update.quantity);
+      
+      if (isNaN(productId)){
+        results.push({
+          productId,
+          status: 'failed',
+          message: 'Invalid product ID'
+        });
+        continue;
+      }
+
+      if (isNaN(quantity)) {
+        results.push({
+          productId,
+          status: 'failed',
+          message: 'Invalid quantity'
+        });
+        continue;
+      }
+
+      bulkOperations.push({
+        updateOne: {
+          filter: { _id: productId },
+          update: { $inc: { stock: quantity } }
+        }
+      });
+
+      results.push({
+        productId,
+        status: 'pending'
+      });
+    }
+
+    if (bulkOperations.length > 0) {
+      const bulkResult = await Product.bulkWrite(bulkOperations, { session });
+      
+      // Update results with actual operation status
+      bulkResult.result?.nModified?.forEach((modified, index) => {
+        if (results[index]) {
+          results[index].status = modified ? 'success' : 'failed';
+          results[index].message = modified ? 'Stock updated' : 'No changes made';
+        }
+      });
+    }
+
+    await session.commitTransaction();
+    res.json({ message: 'Bulk update processed', results });
+  } catch (err) {
+    await session.abortTransaction();
+    res.status(400).json({ message: 'Failed to process bulk update', error: err.message });
+  } finally {
+    session.endSession();
+  }
+});
 app.put('/api/products/:id', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);

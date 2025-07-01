@@ -390,6 +390,20 @@ app.post('/api/bills', async (req, res) => {
     });
     
     await bill.save({ session });
+
+    // Only save contact if customer is new
+    if (customerName && mobileNumber) {
+      const existingContact = await Contact.findOne({ mobileNumber }).session(session);
+      if (!existingContact) {
+        const newContact = new Contact({
+          name: customerName,
+          mobileNumber,
+          lastUsed: new Date()
+        });
+        await newContact.save({ session });
+      }
+    }
+
     await session.commitTransaction();
     
     res.status(201).json(bill);

@@ -14,12 +14,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(helmet());
 app.use(cors({
   origin: [
-    'http://localhost:5173',        // Local development
-    'https://rajasnacks.netlify.app' // Production - NO trailing slash
+    'http://localhost:5173',
+    'https://rajasnacks.netlify.app'
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Added OPTIONS
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true // If using cookies/auth tokens
+  credentials: true
 }));
 
 // Rate Limiting
@@ -29,26 +29,6 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Custom Sanitizer Middleware
-app.use((req, _, next) => {
-  const sanitize = (obj) => {
-    if (obj && typeof obj === 'object') {
-      Object.keys(obj).forEach(key => {
-        if (typeof obj[key] === 'string') {
-          obj[key] = obj[key].replace(/\$/g, '_').replace(/\./g, '_');
-        } else if (typeof obj[key] === 'object') {
-          sanitize(obj[key]);
-        }
-      });
-    }
-  };
-
-  ['body', 'params', 'query'].forEach(prop => {
-    if (req[prop]) sanitize(req[prop]);
-  });
-  next();
-});
-
 // MongoDB Connection
 const dbPassword = process.env.DB_PASSWORD;
 const dbUri = `mongodb+srv://rajasnacks6:${dbPassword}@billing.qqyrxtl.mongodb.net/billing_system?retryWrites=true&w=majority`;
@@ -56,7 +36,7 @@ const dbUri = `mongodb+srv://rajasnacks6:${dbPassword}@billing.qqyrxtl.mongodb.n
 mongoose.connect(dbUri)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => {
-    console.error('MongoDB connection error:', err) ;
+    console.error('MongoDB connection error:', err);
     process.exit(1);
   });
 
@@ -95,20 +75,74 @@ productSchema.pre('save', async function(next) {
 const Product = mongoose.model('Product', productSchema);
 
 const billSchema = new mongoose.Schema({
+  billNumber: { type: String, unique: true },
   items: [{
     productId: { type: Number, ref: 'Product', required: true },
     nameTamil: { type: String, required: true },
-    quantity: { type: Number, required: true, min: 1 },
+    quantity: { 
+      type: Number, 
+      required: true, 
+      min: [1, 'Quantity must be at least 1'],
+      validate: {
+        validator: Number.isInteger,
+        message: 'Quantity must be an integer'
+      }
+    },
     price: { type: Number, required: true, min: 0 },
     total: { type: Number, required: true, min: 0 }
   }],
   grandTotal: { type: Number, required: true, min: 0 },
   customerName: { type: String, trim: true },
-  mobileNumber: { type: String, trim: true },
+  mobileNumber: { 
+    type: String, 
+    trim: true,
+    validate: {
+      validator: function(v) {
+        return /^\d{10}$/.test(v);
+      },
+      message: 'Mobile number must be 10 digits'
+    }
+  },
   date: { type: Date, default: Date.now }
 });
 
+billSchema.pre('save', async function(next) {
+  if (!this.billNumber) {
+    try {
+      const counter = await Counter.findByIdAndUpdate(
+        { _id: 'billNumber' },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true }
+      );
+      this.billNumber = `BILL-${new Date().getFullYear()}-${counter.seq.toString().padStart(6, '0')}`;
+      next();
+    } catch (err) {
+      next(err);
+    }
+  } else {
+    next();
+  }
+});
+
 const Bill = mongoose.model('Bill', billSchema);
+
+const contactSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  mobileNumber: { 
+    type: String, 
+    required: true,
+    unique: true,
+    validate: {
+      validator: function(v) {
+        return /^\d{10}$/.test(v);
+      },
+      message: 'Mobile number must be 10 digits'
+    }
+  },
+  lastUsed: { type: Date, default: Date.now }
+});
+
+const Contact = mongoose.model('Contact', contactSchema);
 
 // Helper Functions
 const validateProductData = (data) => {
@@ -128,7 +162,11 @@ app.get('/api/products', async (req, res) => {
     res.json(products);
   } catch (err) {
     console.error('Error fetching products:', err);
-    res.status(500).json({ message: 'Failed to fetch products', error: err.message });
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to fetch products', 
+      error: err.message 
+    });
   }
 });
 
@@ -136,7 +174,11 @@ app.post('/api/products', async (req, res) => {
   try {
     const errors = validateProductData(req.body);
     if (errors.length > 0) {
-      return res.status(400).json({ message: 'Validation failed', errors });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Validation failed', 
+        errors 
+      });
     }
 
     const product = new Product({
@@ -146,12 +188,20 @@ app.post('/api/products', async (req, res) => {
     });
 
     await product.save();
-    res.status(201).json(product);
+    res.status(201).json({
+      success: true,
+      message: 'Product created successfully',
+      product
+    });
   } catch (err) {
-    res.status(400).json({ message: 'Failed to create product', error: err.message });
+    res.status(400).json({ 
+      success: false,
+      message: 'Failed to create product', 
+      error: err.message 
+    });
   }
 });
-// Add this after your existing stock management routes
+
 app.post('/api/products/stock/bulk', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -161,13 +211,15 @@ app.post('/api/products/stock/bulk', async (req, res) => {
 
     if (!updates || !Array.isArray(updates)) {
       await session.abortTransaction();
-      return res.status(400).json({ message: 'Updates array is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Updates array is required' 
+      });
     }
 
     const bulkOperations = [];
     const results = [];
     
-    // Prepare operations and validate inputs
     for (const update of updates) {
       const productId = parseInt(update.productId);
       const quantity = parseInt(update.quantity);
@@ -189,13 +241,11 @@ app.post('/api/products/stock/bulk', async (req, res) => {
       });
     }
 
-    // Execute bulk operation if we have valid operations
     let bulkResult = null;
     if (bulkOperations.length > 0) {
       bulkResult = await Product.bulkWrite(bulkOperations, { session });
     }
 
-    // Get updated products to include current stock in response
     const updatedProductIds = updates
       .map(u => parseInt(u.productId))
       .filter(id => !isNaN(id));
@@ -205,8 +255,8 @@ app.post('/api/products/stock/bulk', async (req, res) => {
       { _id: 1, stock: 1, nameTamil: 1 }
     ).session(session);
 
-    // Prepare response
     const response = {
+      success: true,
       message: 'Bulk update processed',
       results: updates.map(update => {
         const productId = parseInt(update.productId);
@@ -236,6 +286,7 @@ app.post('/api/products/stock/bulk', async (req, res) => {
     await session.abortTransaction();
     console.error('Bulk update error:', err);
     res.status(400).json({ 
+      success: false,
       message: 'Failed to process bulk update',
       error: err.message 
     });
@@ -243,98 +294,153 @@ app.post('/api/products/stock/bulk', async (req, res) => {
     session.endSession();
   }
 });
-app.put('/api/products/:id', async (req, res) => {
+
+// Billing System
+app.post('/api/bills', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
-    const productId = parseInt(req.params.id);
-    if (isNaN(productId)) {
-      return res.status(400).json({ message: 'Invalid product ID' });
-    }
-
-    const errors = validateProductData(req.body);
-    if (errors.length > 0) {
-      return res.status(400).json({ message: 'Validation failed', errors });
-    }
-
-    const product = await Product.findOneAndUpdate(
-      { _id: productId },
-      {
-        name: req.body.name,
-        nameTamil: req.body.nameTamil,
-        price: parseFloat(req.body.price)
-      },
-      { new: true, runValidators: true }
-    );
-
-    if (!product) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-    res.json(product);
-  } catch (err) {
-    res.status(400).json({ message: 'Failed to update product', error: err.message });
-  }
-});
-
-// Stock Management
-app.post('/api/products/stock', async (req, res) => {
-  try {
-    const { productId, quantity } = req.body;
+    const { items, customerName, mobileNumber } = req.body;
     
-    if (!productId || !quantity || isNaN(quantity)) {
-      return res.status(400).json({ message: 'Valid product ID and quantity are required' });
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false,
+        message: 'At least one bill item is required',
+        errorType: 'NO_ITEMS'
+      });
     }
 
-    const id = parseInt(productId);
-    const qty = parseInt(quantity);
-
-    const product = await Product.findOneAndUpdate(
-      { _id: id },
-      { $inc: { stock: qty } },
-      { new: true }
-    );
-
-    if (!product) {
-      return res.status(404).json({ message: 'Product not found' });
+    if (!customerName || !mobileNumber) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false,
+        message: 'Customer name and mobile number are required',
+        errorType: 'MISSING_CUSTOMER_INFO'
+      });
     }
 
-    res.json({
-      ...product.toObject(),
-      message: `Stock updated. New stock level: ${product.stock}`
+    let grandTotal = 0;
+    const billItems = [];
+    const stockUpdates = [];
+    const productCache = {};
+    
+    for (const [index, item] of items.entries()) {
+      try {
+        const productId = parseInt(item.productId);
+        const quantity = parseInt(item.quantity);
+        
+        if (isNaN(productId)) {
+          throw new Error(`Invalid product ID at position ${index}`);
+        }
+        
+        if (isNaN(quantity)) {
+          throw new Error(`Invalid quantity at position ${index}`);
+        }
+
+        let product = productCache[productId];
+        if (!product) {
+          product = await Product.findOne({ _id: productId }).session(session);
+          if (!product) {
+            throw new Error(`Product ${productId} not found at position ${index}`);
+          }
+          productCache[productId] = product;
+        }
+        
+        if (product.stock < quantity) {
+          throw new Error(
+            `Insufficient stock for ${product.nameTamil} (Available: ${product.stock}, Requested: ${quantity}) at position ${index}`
+          );
+        }
+        
+        const itemTotal = quantity * product.price;
+        grandTotal += itemTotal;
+        
+        billItems.push({
+          productId: product._id,
+          nameTamil: product.nameTamil,
+          quantity,
+          price: product.price,
+          total: itemTotal
+        });
+        
+        stockUpdates.push({
+          updateOne: {
+            filter: { _id: product._id },
+            update: { $inc: { stock: -quantity } }
+          }
+        });
+      } catch (itemError) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: itemError.message,
+          errorType: 'INVALID_ITEM',
+          itemIndex: index
+        });
+      }
+    }
+    
+    try {
+      if (stockUpdates.length > 0) {
+        await Product.bulkWrite(stockUpdates, { session });
+      }
+    } catch (bulkWriteError) {
+      await session.abortTransaction();
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update product stock',
+        error: bulkWriteError.message,
+        errorType: 'STOCK_UPDATE_FAILED'
+      });
+    }
+    
+    const bill = new Bill({
+      items: billItems,
+      grandTotal,
+      customerName,
+      mobileNumber
+    });
+    
+    const savedBill = await bill.save({ session });
+
+    // Save contact if doesn't exist
+    try {
+      const existingContact = await Contact.findOne({ mobileNumber }).session(session);
+      if (!existingContact) {
+        const newContact = new Contact({
+          name: customerName,
+          mobileNumber
+        });
+        await newContact.save({ session });
+      }
+    } catch (contactError) {
+      console.error('Failed to save contact:', contactError);
+    }
+
+    await session.commitTransaction();
+    
+    return res.status(201).json({
+      success: true,
+      message: 'Bill created successfully',
+      bill: savedBill
     });
   } catch (err) {
-    res.status(400).json({ message: 'Failed to update stock', error: err.message });
+    await session.abortTransaction();
+    console.error('Bill creation error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error during bill creation',
+      error: err.message,
+      errorType: 'INTERNAL_SERVER_ERROR'
+    });
+  } finally {
+    session.endSession();
   }
 });
 
-app.get('/api/products/low-stock', async (req, res) => {
-  try {
-    const lowStockProducts = await Product.find({
-      $expr: { $lt: ['$stock', '$minStockLevel'] }
-    });
-    res.json(lowStockProducts);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch low stock products', error: err.message });
-  }
-});
-// Add this Contact model schema near your other models
-const contactSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  mobileNumber: { 
-    type: String, 
-    required: true,
-    unique: true,
-    validate: {
-      validator: function(v) {
-        return /^\d{10}$/.test(v);
-      },
-      message: 'Mobile number must be 10 digits'
-    }
-  },
-  lastUsed: { type: Date, default: Date.now }
-});
-
-const Contact = mongoose.model('Contact', contactSchema);
-
-// Add this endpoint for contact saving
+// Contact Management
 app.post('/api/contacts', async (req, res) => {
   try {
     const { name, mobileNumber } = req.body;
@@ -346,7 +452,6 @@ app.post('/api/contacts', async (req, res) => {
       });
     }
 
-    // Check if contact already exists
     const existingContact = await Contact.findOne({ mobileNumber });
     if (existingContact) {
       return res.status(200).json({
@@ -356,7 +461,6 @@ app.post('/api/contacts', async (req, res) => {
       });
     }
 
-    // Create new contact
     const newContact = new Contact({
       name,
       mobileNumber
@@ -371,7 +475,7 @@ app.post('/api/contacts', async (req, res) => {
       contact: newContact
     });
   } catch (err) {
-    if (err.code === 11000) { // Duplicate key error
+    if (err.code === 11000) {
       return res.status(200).json({
         success: true,
         message: 'Contact already exists',
@@ -385,114 +489,39 @@ app.post('/api/contacts', async (req, res) => {
     });
   }
 });
-// Billing System
-app.post('/api/bills', async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  
+
+app.get('/api/contacts', async (req, res) => {
   try {
-    const { items, customerName, mobileNumber } = req.body;
-    
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'At least one bill item is required' });
-    }
-
-    let grandTotal = 0;
-    const billItems = [];
-    const stockUpdates = [];
-    
-    // Validate all items first
-    for (const item of items) {
-      const productId = parseInt(item.productId);
-      const quantity = parseInt(item.quantity);
-      
-      if (isNaN(productId) || isNaN(quantity) || quantity <= 0) {
-        await session.abortTransaction();
-        return res.status(400).json({ message: 'Invalid product ID or quantity' });
-      }
-
-      const product = await Product.findOne({ _id: productId }).session(session);
-      if (!product) {
-        await session.abortTransaction();
-        return res.status(404).json({ message: `Product ${productId} not found` });
-      }
-      
-      if (product.stock < quantity) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          message: `Insufficient stock for ${product.nameTamil}. Available: ${product.stock}`,
-          productId: product._id,
-          availableStock: product.stock
-        });
-      }
-      
-      const itemTotal = quantity * product.price;
-      grandTotal += itemTotal;
-      
-      billItems.push({
-        productId: product._id,
-        nameTamil: product.nameTamil,
-        quantity,
-        price: product.price,
-        total: itemTotal
-      });
-      
-      stockUpdates.push({
-        updateOne: {
-          filter: { _id: product._id },
-          update: { $inc: { stock: -quantity } }
-        }
-      });
-    }
-    
-    // Process all updates in a single operation
-    if (stockUpdates.length > 0) {
-      await Product.bulkWrite(stockUpdates, { session });
-    }
-    
-    const bill = new Bill({
-      items: billItems,
-      grandTotal,
-      customerName,
-      mobileNumber
+    const contacts = await Contact.find().sort({ lastUsed: -1 }).limit(20);
+    res.json({
+      success: true,
+      contacts
     });
-    
-    await bill.save({ session });
-
-    // Only save contact if customer is new
-    if (customerName && mobileNumber) {
-      const existingContact = await Contact.findOne({ mobileNumber }).session(session);
-      if (!existingContact) {
-        const newContact = new Contact({
-          name: customerName,
-          mobileNumber,
-          lastUsed: new Date()
-        });
-        await newContact.save({ session });
-      }
-    }
-
-    await session.commitTransaction();
-    
-    res.status(201).json(bill);
   } catch (err) {
-    await session.abortTransaction();
-    res.status(400).json({ message: 'Failed to create bill', error: err.message });
-  } finally {
-    session.endSession();
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch contacts',
+      error: err.message
+    });
   }
 });
 
 // Error Handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ message: 'Internal server error' });
+  res.status(500).json({ 
+    success: false,
+    message: 'Internal server error',
+    error: err.message
+  });
 });
 
 // 404 Handler
 app.use((req, res) => {
-  res.status(404).json({ message: 'Endpoint not found' });
+  res.status(404).json({ 
+    success: false,
+    message: 'Endpoint not found' 
+  });
 });
 
 // Server Startup

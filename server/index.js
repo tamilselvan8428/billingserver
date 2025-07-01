@@ -296,6 +296,7 @@ app.post('/api/products/stock/bulk', async (req, res) => {
 });
 
 // Billing System
+// Enhanced Billing Endpoint with better error handling
 app.post('/api/bills', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -303,6 +304,7 @@ app.post('/api/bills', async (req, res) => {
   try {
     const { items, customerName, mobileNumber } = req.body;
     
+    // Validate required fields
     if (!items || !Array.isArray(items) || items.length === 0) {
       await session.abortTransaction();
       return res.status(400).json({ 
@@ -321,24 +323,36 @@ app.post('/api/bills', async (req, res) => {
       });
     }
 
+    // Validate mobile number format
+    if (!/^\d{10}$/.test(mobileNumber)) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false,
+        message: 'Mobile number must be 10 digits',
+        errorType: 'INVALID_MOBILE_NUMBER'
+      });
+    }
+
     let grandTotal = 0;
     const billItems = [];
     const stockUpdates = [];
     const productCache = {};
     
+    // Process each item with detailed validation
     for (const [index, item] of items.entries()) {
       try {
         const productId = parseInt(item.productId);
         const quantity = parseInt(item.quantity);
         
-        if (isNaN(productId)) {
+        if (isNaN(productId) || productId <= 0) {
           throw new Error(`Invalid product ID at position ${index}`);
         }
         
-        if (isNaN(quantity)) {
+        if (isNaN(quantity) || quantity <= 0) {
           throw new Error(`Invalid quantity at position ${index}`);
         }
 
+        // Check product cache first
         let product = productCache[productId];
         if (!product) {
           product = await Product.findOne({ _id: productId }).session(session);
@@ -382,6 +396,7 @@ app.post('/api/bills', async (req, res) => {
       }
     }
     
+    // Process stock updates in bulk
     try {
       if (stockUpdates.length > 0) {
         await Product.bulkWrite(stockUpdates, { session });
@@ -396,6 +411,7 @@ app.post('/api/bills', async (req, res) => {
       });
     }
     
+    // Create and save the bill
     const bill = new Bill({
       items: billItems,
       grandTotal,
@@ -405,7 +421,7 @@ app.post('/api/bills', async (req, res) => {
     
     const savedBill = await bill.save({ session });
 
-    // Save contact if doesn't exist
+    // Save contact if doesn't exist (but don't fail bill creation if this fails)
     try {
       const existingContact = await Contact.findOne({ mobileNumber }).session(session);
       if (!existingContact) {
@@ -417,6 +433,7 @@ app.post('/api/bills', async (req, res) => {
       }
     } catch (contactError) {
       console.error('Failed to save contact:', contactError);
+      // Continue with bill creation even if contact save fails
     }
 
     await session.commitTransaction();

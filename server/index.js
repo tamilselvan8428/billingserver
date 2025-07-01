@@ -315,7 +315,76 @@ app.get('/api/products/low-stock', async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch low stock products', error: err.message });
   }
 });
+// Add this Contact model schema near your other models
+const contactSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  mobileNumber: { 
+    type: String, 
+    required: true,
+    unique: true,
+    validate: {
+      validator: function(v) {
+        return /^\d{10}$/.test(v);
+      },
+      message: 'Mobile number must be 10 digits'
+    }
+  },
+  lastUsed: { type: Date, default: Date.now }
+});
 
+const Contact = mongoose.model('Contact', contactSchema);
+
+// Add this endpoint for contact saving
+app.post('/api/contacts', async (req, res) => {
+  try {
+    const { name, mobileNumber } = req.body;
+    
+    if (!name || !mobileNumber) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Name and mobile number are required'
+      });
+    }
+
+    // Check if contact already exists
+    const existingContact = await Contact.findOne({ mobileNumber });
+    if (existingContact) {
+      return res.status(200).json({
+        success: true,
+        message: 'Contact already exists',
+        isNew: false
+      });
+    }
+
+    // Create new contact
+    const newContact = new Contact({
+      name,
+      mobileNumber
+    });
+
+    await newContact.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'Contact saved successfully',
+      isNew: true,
+      contact: newContact
+    });
+  } catch (err) {
+    if (err.code === 11000) { // Duplicate key error
+      return res.status(200).json({
+        success: true,
+        message: 'Contact already exists',
+        isNew: false
+      });
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save contact',
+      error: err.message
+    });
+  }
+});
 // Billing System
 app.post('/api/bills', async (req, res) => {
   const session = await mongoose.startSession();

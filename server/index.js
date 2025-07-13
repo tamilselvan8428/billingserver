@@ -457,6 +457,7 @@ app.post('/api/bills', async (req, res) => {
   }
 });
 // Stock Management Endpoint
+// Add this with your other product routes
 app.post('/api/products/stock', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -464,6 +465,7 @@ app.post('/api/products/stock', async (req, res) => {
   try {
     const { productId, quantity } = req.body;
 
+    // Validate input
     if (!productId || isNaN(quantity)) {
       await session.abortTransaction();
       return res.status(400).json({ 
@@ -472,6 +474,7 @@ app.post('/api/products/stock', async (req, res) => {
       });
     }
 
+    // Find and update the product
     const product = await Product.findOneAndUpdate(
       { _id: productId },
       { $inc: { stock: quantity } },

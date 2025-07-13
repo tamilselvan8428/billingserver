@@ -154,7 +154,35 @@ const validateProductData = (data) => {
 };
 
 // API Routes
+app.get('/api/products/search', async (req, res) => {
+  try {
+    const { name } = req.query;
+    if (!name) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Product name is required' 
+      });
+    }
 
+    const products = await Product.find({
+      $or: [
+        { name: { $regex: name, $options: 'i' } },
+        { nameTamil: { $regex: name, $options: 'i' } }
+      ]
+    }).limit(10);
+
+    res.json({
+      success: true,
+      products
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false,
+      message: 'Search failed',
+      error: err.message 
+    });
+  }
+});
 // Product Management
 app.get('/api/products', async (req, res) => {
   try {
@@ -169,7 +197,48 @@ app.get('/api/products', async (req, res) => {
     });
   }
 });
+app.put('/api/products/update-by-name', async (req, res) => {
+  try {
+    const { name, newData } = req.body;
+    
+    if (!name || !newData) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Product name and update data are required' 
+      });
+    }
 
+    const product = await Product.findOneAndUpdate(
+      { 
+        $or: [
+          { name: name },
+          { nameTamil: name }
+        ]
+      },
+      newData,
+      { new: true }
+    );
+
+    if (!product) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Product not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Product updated successfully',
+      product
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false,
+      message: 'Update failed',
+      error: err.message 
+    });
+  }
+});
 app.post('/api/products', async (req, res) => {
   try {
     const errors = validateProductData(req.body);

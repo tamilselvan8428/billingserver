@@ -270,7 +270,67 @@ app.post('/api/products', async (req, res) => {
     });
   }
 });
+app.post('/api/products/update-stock-by-name', async (req, res) => {
+  try {
+    const { name, quantity } = req.body;
+    
+    const product = await Product.findOneAndUpdate(
+      { 
+        $or: [
+          { name: name },
+          { nameTamil: name }
+        ]
+      },
+      { $inc: { stock: quantity } },
+      { new: true }
+    );
 
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    res.json({
+      success: true,
+      product: {
+        _id: product._id,
+        name: product.name,
+        nameTamil: product.nameTamil,
+        stock: product.stock
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.post('/api/products/update-stock-bulk-by-name', async (req, res) => {
+  try {
+    const { updates } = req.body;
+    const results = [];
+
+    for (const update of updates) {
+      const product = await Product.findOneAndUpdate(
+        { 
+          $or: [
+            { name: update.name },
+            { nameTamil: update.name }
+          ]
+        },
+        { $inc: { stock: update.quantity } },
+        { new: true }
+      );
+
+      results.push({
+        name: update.name,
+        success: !!product,
+        newStock: product?.stock
+      });
+    }
+
+    res.json({ success: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.post('/api/products/stock/bulk', async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();

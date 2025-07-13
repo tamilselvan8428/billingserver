@@ -456,7 +456,60 @@ app.post('/api/bills', async (req, res) => {
     session.endSession();
   }
 });
+// Stock Management Endpoint
+app.post('/api/products/stock', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
+  try {
+    const { productId, quantity } = req.body;
+
+    if (!productId || isNaN(quantity)) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false,
+        message: 'Product ID and valid quantity are required' 
+      });
+    }
+
+    const product = await Product.findOneAndUpdate(
+      { _id: productId },
+      { $inc: { stock: quantity } },
+      { new: true, session }
+    );
+
+    if (!product) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false,
+        message: 'Product not found' 
+      });
+    }
+
+    await session.commitTransaction();
+    
+    res.json({
+      success: true,
+      message: 'Stock updated successfully',
+      product: {
+        _id: product._id,
+        name: product.name,
+        nameTamil: product.nameTamil,
+        stock: product.stock
+      }
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Stock update error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to update stock',
+      error: err.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
 // Contact Management
 app.post('/api/contacts', async (req, res) => {
   try {

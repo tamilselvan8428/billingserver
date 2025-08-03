@@ -636,7 +636,6 @@ app.get('/api/bills', async (req, res) => {
   try {
     const { date } = req.query;
     
-    // Create date filter
     let filter = {};
     if (date) {
       const startDate = new Date(date);
@@ -650,7 +649,7 @@ app.get('/api/bills', async (req, res) => {
     
     const bills = await Bill.find(filter)
       .sort({ date: -1 })
-      .populate('items.productId', 'name nameTamil price');
+      .populate('items.productId', 'name nameTamil price'); // Make sure this is working
     
     res.json({
       success: true,

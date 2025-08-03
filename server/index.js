@@ -631,7 +631,89 @@ app.post('/api/contacts', async (req, res) => {
     });
   }
 });
-
+// Get bills with date filtering
+app.get('/api/bills', async (req, res) => {
+  try {
+    const { date } = req.query;
+    
+    // Create date filter
+    let filter = {};
+    if (date) {
+      const startDate = new Date(date);
+      startDate.setHours(0, 0, 0, 0);
+      
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+      
+      filter.date = { $gte: startDate, $lte: endDate };
+    }
+    
+    const bills = await Bill.find(filter)
+      .sort({ date: -1 })
+      .populate('items.productId', 'name nameTamil price');
+    
+    res.json({
+      success: true,
+      bills
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch bills',
+      error: err.message
+    });
+  }
+});
+// Get daily summary statistics
+app.get('/api/bills/summary', async (req, res) => {
+  try {
+    const { date } = req.query;
+    
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Date parameter is required'
+      });
+    }
+    
+    const startDate = new Date(date);
+    startDate.setHours(0, 0, 0, 0);
+    
+    const endDate = new Date(date);
+    endDate.setHours(23, 59, 59, 999);
+    
+    const result = await Bill.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: "$grandTotal" },
+          billCount: { $sum: 1 },
+          averageBill: { $avg: "$grandTotal" }
+        }
+      }
+    ]);
+    
+    const summary = result.length > 0 
+      ? result[0] 
+      : { totalAmount: 0, billCount: 0, averageBill: 0 };
+    
+    res.json({
+      success: true,
+      summary
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch summary',
+      error: err.message
+    });
+  }
+});
 app.get('/api/contacts', async (req, res) => {
   try {
     const contacts = await Contact.find().sort({ lastUsed: -1 }).limit(20);

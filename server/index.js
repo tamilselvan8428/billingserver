@@ -729,6 +729,45 @@ app.get('/api/contacts', async (req, res) => {
   }
 });
 
+// Delete Product
+app.delete('/api/products/:id', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    // Find and delete the product
+    const deletedProduct = await Product.findByIdAndDelete(id).session(session);
+    
+    if (!deletedProduct) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false,
+        message: 'Product not found' 
+      });
+    }
+
+    await session.commitTransaction();
+    
+    res.json({
+      success: true,
+      message: 'Product deleted successfully',
+      productId: id
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Delete product error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to delete product',
+      error: err.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
 // Error Handling
 app.use((err, req, res, next) => {
   console.error(err.stack);

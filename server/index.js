@@ -30,8 +30,8 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // MongoDB Connection
-const dbPassword = process.env.DB_PASSWORD;
-const dbUri = `mongodb+srv://rajasnacks6:${dbPassword}@billing.qqyrxtl.mongodb.net/billing_system?retryWrites=true&w=majority`;
+// MongoDB Connection
+const dbUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/billing_system';
 
 mongoose.connect(dbUri)
   .then(() => console.log('Connected to MongoDB'))

@@ -713,6 +713,49 @@ app.get('/api/bills/summary', async (req, res) => {
     });
   }
 });
+// In billingserver/server/index.js, add these endpoints:
+
+// Get bill by ID
+app.get('/api/bills/:id', async (req, res) => {
+  try {
+    const bill = await Bill.findById(req.params.id);
+    if (!bill) return res.status(404).json({ message: 'Bill not found' });
+    res.json(bill);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Update bill
+app.put('/api/bills/:id', async (req, res) => {
+  try {
+    const updatedBill = await Bill.findByIdAndUpdate(
+      req.params.id,
+      { $set: req.body },
+      { new: true }
+    );
+    res.json(updatedBill);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// Schedule cleanup of old bills (runs once per day)
+const cleanupOldBills = async () => {
+  const threeMonthsAgo = new Date();
+  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+  
+  await Bill.deleteMany({ 
+    createdAt: { $lt: threeMonthsAgo } 
+  });
+  console.log('Cleaned up old bills');
+};
+
+// Run cleanup daily
+setInterval(cleanupOldBills, 24 * 60 * 60 * 1000);
+
+// Initial cleanup on server start
+cleanupOldBills();
 app.get('/api/contacts', async (req, res) => {
   try {
     const contacts = await Contact.find().sort({ lastUsed: -1 }).limit(20);

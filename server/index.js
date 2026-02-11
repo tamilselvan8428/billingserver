@@ -24,21 +24,109 @@ app.use(cors({
 
 // Rate Limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100
+  windowMs: 60 * 60 * 1000,
+  max: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    return req.path === '/api/health' || req.path === '/api/keep-alive';
+  }
 });
 app.use(limiter);
 
 // MongoDB Connection
-// MongoDB Connection
 const dbUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/billing_system';
+let isConnecting = false; // Prevent multiple connection attempts
 
-mongoose.connect(dbUri)
-  .then(() => console.log('Connected to MongoDB'))
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  });
+console.log('Attempting to connect to MongoDB...');
+console.log('URI:', dbUri.replace(/\/\/.*@/, '//***:***@')); // Hide credentials in logs
+
+const connectToMongoDB = async (uri, isFallback = false) => {
+  if (isConnecting) {
+    console.log('⚠️ Connection already in progress, skipping...');
+    return;
+  }
+  
+  isConnecting = true;
+  
+  try {
+    await mongoose.connect(uri, {
+      serverSelectionTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      maxPoolSize: 10,
+      minPoolSize: 5,
+      maxIdleTimeMS: 30000,
+      heartbeatFrequencyMS: 10000,
+      retryWrites: true,
+      w: 'majority'
+    });
+    
+    console.log('✅ Connected to MongoDB successfully');
+    console.log('Database:', uri.includes('localhost') ? 'Local MongoDB' : 'MongoDB Atlas');
+    isConnecting = false;
+  } catch (err) {
+    isConnecting = false;
+    throw err;
+  }
+};
+
+// Initial connection
+connectToMongoDB(dbUri).catch(err => {
+  console.error('❌ MongoDB connection error:', err.message);
+  
+  if (err.code === 'ECONNREFUSED') {
+    console.log('🔧 Connection refused. Possible solutions:');
+    console.log('   1. Check if MongoDB is running (for local)');
+    console.log('   2. Verify network connection (for Atlas)');
+    console.log('   3. Check MongoDB Atlas credentials and IP whitelist');
+    console.log('   4. Try using local MongoDB as fallback');
+  }
+  
+  // Try to continue with local MongoDB as fallback
+  if (!dbUri.includes('localhost')) {
+    console.log('🔄 Attempting fallback to local MongoDB...');
+    const localUri = 'mongodb://localhost:27017/billing_system';
+    connectToMongoDB(localUri, true).catch(localErr => {
+      console.error('❌ Local MongoDB also failed:', localErr.message);
+      console.log('💡 Please ensure MongoDB is installed and running locally');
+      console.log('   - Run: mongod');
+      console.log('   - Or install: npm install -g mongodb');
+    });
+  }
+});
+
+// Connection monitoring
+mongoose.connection.on('connected', () => {
+  console.log('MongoDB connected successfully');
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('MongoDB connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('MongoDB disconnected');
+});
+
+// Auto-reconnect on connection loss
+mongoose.connection.on('disconnected', () => {
+  console.log('🔄 MongoDB disconnected, attempting to reconnect...');
+  
+  setTimeout(() => {
+    connectToMongoDB(dbUri).catch(err => {
+      console.error('❌ Reconnection failed:', err.message);
+      
+      // Try local fallback if Atlas fails
+      if (!dbUri.includes('localhost') && err.code === 'ECONNREFUSED') {
+        console.log('🔄 Falling back to local MongoDB...');
+        const localUri = 'mongodb://localhost:27017/billing_system';
+        connectToMongoDB(localUri, true).catch(localErr => {
+          console.error('❌ Local fallback also failed:', localErr.message);
+        });
+      }
+    });
+  }, 5000); // Retry after 5 seconds
+});
 
 // Database Models
 const Counter = mongoose.model('Counter', new mongoose.Schema({
@@ -154,6 +242,24 @@ const validateProductData = (data) => {
 };
 
 // API Routes
+// Health check and keep-alive endpoints
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Server is healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+app.get('/api/keep-alive', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Connection kept alive',
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.get('/api/products/search', async (req, res) => {
   try {
     const { name } = req.query;
@@ -183,6 +289,7 @@ app.get('/api/products/search', async (req, res) => {
     });
   }
 });
+
 // Product Management
 app.get('/api/products', async (req, res) => {
   try {

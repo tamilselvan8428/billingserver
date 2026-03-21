@@ -52,14 +52,16 @@ const connectToMongoDB = async (uri, isFallback = false) => {
   
   try {
     await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 30000,
-      socketTimeoutMS: 45000,
-      maxPoolSize: 10,
-      minPoolSize: 5,
-      maxIdleTimeMS: 30000,
-      heartbeatFrequencyMS: 10000,
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 20000,
+      maxPoolSize: 20,
+      minPoolSize: 10,
+      maxIdleTimeMS: 10000,
+      heartbeatFrequencyMS: 5000,
       retryWrites: true,
-      w: 'majority'
+      w: 'majority',
+      bufferCommands: false,
+      bufferMaxEntries: 0
     });
     
     console.log('✅ Connected to MongoDB successfully');

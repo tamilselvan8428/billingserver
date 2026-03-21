@@ -59,9 +59,7 @@ const connectToMongoDB = async (uri, isFallback = false) => {
       maxIdleTimeMS: 10000,
       heartbeatFrequencyMS: 5000,
       retryWrites: true,
-      w: 'majority',
-      bufferCommands: false,
-      bufferMaxEntries: 0
+      w: 'majority'
     });
     
     console.log('✅ Connected to MongoDB successfully');

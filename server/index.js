@@ -294,7 +294,11 @@ app.get('/api/products/search', async (req, res) => {
 // Product Management
 app.get('/api/products', async (req, res) => {
   try {
-    const products = await Product.find().sort({ _id: 1 });
+    // Add lean() for faster queries and only select needed fields
+    const products = await Product.find()
+      .select('_id name nameTamil price stock minStockLevel')
+      .lean()
+      .sort({ _id: 1 });
     res.json(products);
   } catch (err) {
     console.error('Error fetching products:', err);
@@ -757,7 +761,7 @@ app.get('/api/bills', async (req, res) => {
     
     const bills = await Bill.find(filter)
       .sort({ date: -1 })
-      .populate('items.productId', 'name nameTamil price'); // Make sure this is working
+      .lean(); // Use lean() for faster queries
     
     res.json({
       success: true,
@@ -866,7 +870,11 @@ setInterval(cleanupOldBills, 24 * 60 * 60 * 1000);
 cleanupOldBills();
 app.get('/api/contacts', async (req, res) => {
   try {
-    const contacts = await Contact.find().sort({ lastUsed: -1 }).limit(20);
+    const contacts = await Contact.find()
+      .select('_id name mobileNumber lastUsed')
+      .lean()
+      .sort({ lastUsed: -1 })
+      .limit(20);
     res.json({
       success: true,
       contacts

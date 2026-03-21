@@ -16,7 +16,8 @@ app.use(cors({
   origin: [
     'http://localhost:5173',
     'https://rajasnacks.netlify.app',
-    'http://billing-server-gaha.onrender.com'
+    'http://billing-server-gaha.onrender.com',
+    'https://billing-server-gaha.onrender.com'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],

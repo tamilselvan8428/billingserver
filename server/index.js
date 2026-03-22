@@ -928,6 +928,45 @@ app.delete('/api/products/:id', async (req, res) => {
   }
 });
 
+// Delete a bill
+app.delete('/api/bills/:id', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    
+    // Find and delete the bill
+    const deletedBill = await Bill.findByIdAndDelete(id).session(session);
+    
+    if (!deletedBill) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false,
+        message: 'Bill not found' 
+      });
+    }
+
+    await session.commitTransaction();
+    
+    res.json({
+      success: true,
+      message: 'Bill deleted successfully',
+      billId: id
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Delete bill error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to delete bill',
+      error: err.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
 // Error Handling
 app.use((err, req, res, next) => {
   console.error(err.stack);

@@ -928,6 +928,46 @@ app.delete('/api/products/:id', async (req, res) => {
   }
 });
 
+// Get next bill number
+app.get('/api/bills/next-number', async (req, res) => {
+  try {
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+    
+    // Find the highest bill number for today
+    const latestBill = await Bill.findOne({
+      date: {
+        $gte: new Date(todayStr + 'T00:00:00.000Z'),
+        $lt: new Date(todayStr + 'T23:59:59.999Z')
+      }
+    }).sort({ billNumber: -1 });
+    
+    let nextNumber = '001';
+    if (latestBill && latestBill.billNumber) {
+      // Extract last 3 digits and increment
+      const currentNum = parseInt(latestBill.billNumber.slice(-3));
+      nextNumber = String(currentNum + 1).padStart(3, '0');
+    }
+    
+    // Generate full bill number
+    const day = String(today.getDate()).padStart(2, '0');
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const year = today.getFullYear().toString();
+    const billNumber = `${day}${month}${year}${nextNumber}`;
+    
+    res.json({
+      success: true,
+      billNumber
+    });
+  } catch (error) {
+    console.error('Error getting next bill number:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get next bill number'
+    });
+  }
+});
+
 // Delete a bill
 app.delete('/api/bills/:id', async (req, res) => {
   const session = await mongoose.startSession();

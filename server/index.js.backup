@@ -842,34 +842,9 @@ app.get('/api/bills/:id', async (req, res) => {
 // Update bill
 app.put('/api/bills/:id', async (req, res) => {
   try {
-    const { items, customerName, mobileNumber } = req.body;
-    
-    // Calculate grandTotal from items
-    let grandTotal = 0;
-    const productCache = {};
-    
-    for (const item of items) {
-      if (!productCache[item.productId]) {
-        const product = await Product.findById(item.productId);
-        productCache[item.productId] = product;
-      }
-      
-      const product = productCache[item.productId];
-      if (product) {
-        grandTotal += item.quantity * product.price;
-      }
-    }
-    
     const updatedBill = await Bill.findByIdAndUpdate(
       req.params.id,
-      { 
-        $set: {
-          items,
-          grandTotal,
-          customerName,
-          mobileNumber
-        }
-      },
+      { $set: req.body },
       { new: true }
     );
     res.json(updatedBill);

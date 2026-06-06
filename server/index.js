@@ -828,6 +828,70 @@ app.get('/api/bills/summary', async (req, res) => {
 });
 // In billingserver/server/index.js, add these endpoints:
 
+// Get sales history for analysis
+app.get('/api/sales/history', async (req, res) => {
+  try {
+    const range = req.query.range || 'month';
+    const startDate = new Date();
+    
+    if (range === 'week') {
+      startDate.setDate(startDate.getDate() - 7);
+    } else if (range === 'year') {
+      startDate.setMonth(startDate.getMonth() - 12);
+    } else { // month
+      startDate.setDate(startDate.getDate() - 30);
+    }
+    startDate.setHours(0, 0, 0, 0);
+
+    const isYearly = range === 'year';
+    
+    const salesData = await Bill.aggregate([
+      {
+        $match: {
+          date: { $gte: startDate }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: {
+              format: isYearly ? "%Y-%m" : "%Y-%m-%d",
+              date: "$date"
+            }
+          },
+          totalSales: { $sum: "$grandTotal" },
+          billCount: { $sum: 1 },
+          averageBill: { $avg: "$grandTotal" }
+        }
+      },
+      {
+        $sort: { _id: 1 }
+      },
+      {
+        $project: {
+          _id: 0,
+          date: "$_id",
+          totalSales: 1,
+          billCount: 1,
+          averageBill: { $round: ["$averageBill", 2] }
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      salesData
+    });
+  } catch (err) {
+    console.error('Error fetching sales history:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sales history',
+      error: err.message
+    });
+  }
+});
+
 // Get bill by ID
 app.get('/api/bills/:id', async (req, res) => {
   try {

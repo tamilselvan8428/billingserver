@@ -199,12 +199,18 @@ const billSchema = new mongoose.Schema({
 billSchema.pre('save', async function(next) {
   if (!this.billNumber) {
     try {
+      const today = new Date();
+      const day = String(today.getDate()).padStart(2, '0');
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const year = today.getFullYear().toString();
+      const todayKey = `${day}${month}${year}`;
+
       const counter = await Counter.findByIdAndUpdate(
-        { _id: 'billNumber' },
+        { _id: `billNumber_${todayKey}` },
         { $inc: { seq: 1 } },
         { new: true, upsert: true }
       );
-      this.billNumber = `BILL-${new Date().getFullYear()}-${counter.seq.toString().padStart(6, '0')}`;
+      this.billNumber = `${todayKey}${counter.seq.toString().padStart(3, '0')}`;
       next();
     } catch (err) {
       next(err);
@@ -484,7 +490,16 @@ app.post('/api/bills', async (req, res) => {
   session.startTransaction();
   
   try {
-    const { items, customerName, mobileNumber } = req.body;
+    const { billNumber, items, customerName, mobileNumber } = req.body;
+    
+    // Check if the bill number is unique to prevent duplicate key error during concurrency
+    let finalBillNumber = billNumber;
+    if (finalBillNumber) {
+      const existingBill = await Bill.findOne({ billNumber: finalBillNumber }).session(session);
+      if (existingBill) {
+        finalBillNumber = undefined; // trigger hook to generate next sequential unique number
+      }
+    }
     
     // Validate required fields
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -595,6 +610,7 @@ app.post('/api/bills', async (req, res) => {
     
     // Create and save the bill
     const bill = new Bill({
+      billNumber: finalBillNumber,
       items: billItems,
       grandTotal,
       customerName,
@@ -905,25 +921,75 @@ app.get('/api/bills/:id', async (req, res) => {
 
 // Update bill
 app.put('/api/bills/:id', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { items, customerName, mobileNumber } = req.body;
     
-    // Calculate grandTotal from items
+    const oldBill = await Bill.findById(req.params.id).session(session);
+    if (!oldBill) {
+      await session.abortTransaction();
+      return res.status(404).json({ message: 'Bill not found' });
+    }
+
+    // Calculate grandTotal from items and validate products
     let grandTotal = 0;
     const productCache = {};
-    
+    const stockChanges = {}; // productId -> quantity change (positive is return to stock, negative is take from stock)
+
+    // Add back old quantities (return to stock)
+    for (const item of oldBill.items) {
+      const pid = item.productId;
+      stockChanges[pid] = (stockChanges[pid] || 0) + item.quantity;
+    }
+
+    // Subtract new quantities (take from stock) and compute grandTotal
     for (const item of items) {
-      if (!productCache[item.productId]) {
-        const product = await Product.findById(item.productId);
-        productCache[item.productId] = product;
+      const pid = parseInt(item.productId);
+      if (isNaN(pid)) {
+        throw new Error('Invalid product ID');
+      }
+
+      if (!productCache[pid]) {
+        const product = await Product.findById(pid).session(session);
+        if (!product) {
+          throw new Error(`Product ${pid} not found`);
+        }
+        productCache[pid] = product;
       }
       
-      const product = productCache[item.productId];
-      if (product) {
-        grandTotal += item.quantity * product.price;
-      }
+      const product = productCache[pid];
+      grandTotal += item.quantity * product.price;
+      stockChanges[pid] = (stockChanges[pid] || 0) - item.quantity;
     }
-    
+
+    // Apply stock changes
+    for (const [productIdStr, change] of Object.entries(stockChanges)) {
+      if (change === 0) continue;
+
+      const productId = parseInt(productIdStr);
+      let product = productCache[productId];
+      if (!product) {
+        product = await Product.findById(productId).session(session);
+        if (!product) {
+          throw new Error(`Product ${productId} not found during stock adjustment`);
+        }
+        productCache[productId] = product;
+      }
+
+      // If change is negative (we need more stock), verify availability
+      if (change < 0 && (product.stock + change) < 0) {
+        throw new Error(`Insufficient stock for ${product.nameTamil} (Available: ${product.stock}, Additional needed: ${-change})`);
+      }
+
+      await Product.findByIdAndUpdate(
+        productId,
+        { $inc: { stock: change } },
+        { session }
+      );
+    }
+
     const updatedBill = await Bill.findByIdAndUpdate(
       req.params.id,
       { 
@@ -934,11 +1000,17 @@ app.put('/api/bills/:id', async (req, res) => {
           mobileNumber
         }
       },
-      { new: true }
+      { new: true, session }
     );
+
+    await session.commitTransaction();
     res.json(updatedBill);
   } catch (error) {
+    await session.abortTransaction();
+    console.error('Update bill error:', error);
     res.status(400).json({ message: error.message });
+  } finally {
+    session.endSession();
   }
 });
 
@@ -948,7 +1020,7 @@ const cleanupOldBills = async () => {
   threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
   
   await Bill.deleteMany({ 
-    createdAt: { $lt: threeMonthsAgo } 
+    date: { $lt: threeMonthsAgo } 
   });
   console.log('Cleaned up old bills');
 };
@@ -1065,16 +1137,30 @@ app.delete('/api/bills/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Find and delete the bill
-    const deletedBill = await Bill.findByIdAndDelete(id).session(session);
-    
-    if (!deletedBill) {
+    // Find the bill first to get items for stock replenishment
+    const bill = await Bill.findById(id).session(session);
+    if (!bill) {
       await session.abortTransaction();
       return res.status(404).json({ 
         success: false,
         message: 'Bill not found' 
       });
     }
+
+    // Replenish stock for all items in the deleted bill
+    const stockReplenishments = bill.items.map(item => ({
+      updateOne: {
+        filter: { _id: item.productId },
+        update: { $inc: { stock: item.quantity } }
+      }
+    }));
+
+    if (stockReplenishments.length > 0) {
+      await Product.bulkWrite(stockReplenishments, { session });
+    }
+    
+    // Delete the bill
+    await Bill.findByIdAndDelete(id).session(session);
 
     await session.commitTransaction();
     
